@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>美人投票 結果</title>
+<!--
+  美人投票ゲーム 結果ページ（スクリーン投影用）
+  API_URL に beauty.html の GAS_URL と同じURLを入れる（doGet が必要）。
+  URLパラメータ
+    ?s=2     … セッション番号（beauty.html?s=2 で集めた回に対応。省略時 1）
+    ?demo=1  … ダミーデータで表示（授業前の見た目確認用）
+  画面は 4 段階：受付中 → 受講生相手の結果 → 3つの相手を比較 → みんなの理由
+  受付中は人数だけを表示し、分布は「結果発表」を押すまで出さない。
+-->
+<style>
+  :root{
+    --bg:#f6f1e8; --card:#fffdf8; --ink:#1f2430; --sub:#6b6f7a; --line:#e2d9c8; --grid:#ece5d6;
+    --accent:#c2410c; --human:#c2410c; --random:#6b7280; --ai:#1d4ed8; --gold:#b45309; --soft:#fde7d9;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#17181c; --card:#212329; --ink:#ecebe7; --sub:#a3a3a8; --line:#34363d; --grid:#2b2d33;
+      --accent:#fb923c; --human:#fb923c; --random:#a1a1aa; --ai:#60a5fa; --gold:#fbbf24; --soft:#3a2516;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:"Hiragino Kaku Gothic ProN","Noto Sans JP","Yu Gothic",system-ui,sans-serif;line-height:1.6}
+  header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;
+    max-width:1100px;margin:0 auto;padding:18px 16px 6px}
+  h1{font-size:1.4rem;margin:0}
+  .meta{color:var(--sub);font-size:.9rem}
+  nav{display:flex;flex-wrap:wrap;gap:6px;max-width:1100px;margin:0 auto;padding:6px 16px}
+  nav button{font:inherit;font-weight:700;font-size:.92rem;border:1.5px solid var(--line);background:var(--card);
+    color:var(--ink);border-radius:999px;padding:8px 14px;cursor:pointer}
+  nav button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  main{max-width:1100px;margin:0 auto;padding:8px 16px 50px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin:12px 0}
+  .hero{text-align:center;padding:40px 16px}
+  .hero .n{font-size:clamp(4rem,16vw,9rem);font-weight:800;line-height:1;color:var(--accent)}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:10px 0}
+  .tile{background:var(--bg);border-radius:12px;padding:12px 14px}
+  .tile .k{font-size:.82rem;color:var(--sub)} .tile .v{font-size:1.8rem;font-weight:800}
+  .winner{border:2px solid var(--gold);background:var(--soft);border-radius:16px;padding:16px;text-align:center;margin:12px 0}
+  .winner .crown{font-size:2.2rem}
+  .winner .prize{display:inline-block;margin-top:10px;background:var(--accent);color:#fff;font-weight:800;
+    border-radius:999px;padding:6px 20px;font-size:clamp(1rem,2.4vw,1.4rem)} .winner .names{font-size:clamp(1.4rem,4vw,2.2rem);font-weight:800}
+  svg{width:100%;height:auto;display:block}
+  svg text{fill:var(--sub);font-size:12px;font-family:inherit}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.88rem;color:var(--sub);margin:6px 0}
+  .legend i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .rowlabel{font-weight:800;margin:14px 0 2px}
+  .reasons{columns:2 300px;column-gap:14px}
+  .reason{break-inside:avoid;background:var(--bg);border-radius:12px;padding:10px 12px;margin:0 0 10px;font-size:.95rem}
+  .reason .num{font-weight:800;color:var(--human);margin-right:6px}
+  .reason .lv{font-size:.75rem;color:var(--sub);float:right}
+  .sub{color:var(--sub);font-size:.9rem}
+  select{font:inherit;padding:6px 10px;border-radius:8px;border:1.5px solid var(--line);background:var(--card);color:var(--ink)}
+  .reveal{font:inherit;font-weight:800;font-size:1.2rem;border:none;border-radius:14px;padding:16px 28px;
+    background:var(--accent);color:#fff;cursor:pointer;margin-top:18px}
+  .err{color:#b91c1c}
+</style>
+</head>
+<body>
+<header>
+  <h1>🗳️ 美人投票ゲーム</h1>
+  <div class="meta">セッション <select id="sess"></select>　<span id="upd"></span></div>
+</header>
+<nav id="nav"></nav>
+<main id="main"></main>
+<script>
+const API_URL = "https://script.google.com/macros/s/AKfycbztok7W_7t7ZAaQ_dGaMJW9OqO4z07i4oXLPcxFA4sqxidfCsaezBXeM09VwR9yZIEj/exec";   // ← beauty.html の GAS_URL と同じURL
+
+const P = new URLSearchParams(location.search);
+const DEMO = P.has("demo") || !API_URL;
+let SESSION = P.get("s") || "1";
+let VIEW = "wait";
+let ROWS = [];
+const VIEWS = [["wait","① 受付中"],["human","② 受講生相手の結果"],["compare","③ 3つの相手を比較"],["reasons","④ みんなの理由"]];
+const C = k => getComputedStyle(document.documentElement).getPropertyValue("--"+k).trim();
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const mean = a => a.length ? a.reduce((s,x)=>s+x,0)/a.length : NaN;
+const median = a => { if(!a.length) return NaN; const b=[...a].sort((x,y)=>x-y), m=b.length>>1; return b.length%2?b[m]:(b[m-1]+b[m])/2; };
+const f1 = x => isNaN(x) ? "–" : x.toFixed(1);
+
+// レベルk：L0 は平均50と予想、Lk は 50×(2/3)^k
+const LEVELS = [0,1,2,3].map(k => ({k, v: 50*Math.pow(2/3,k)}));
+function levelOf(g){
+  if (g === 0 || g === 1) return "均衡（0）付近";
+  if (g > 67) return "勝てない領域（>67）";
+  let best = LEVELS[0], d = 1e9;
+  LEVELS.forEach(L => { if (Math.abs(g-L.v) < d) { d = Math.abs(g-L.v); best = L; } });
+  return d <= 3 ? `レベル${best.k}（${best.v.toFixed(0)}）付近` : "";
+}
+
+// ---------- データ ----------
+function demoRows(){
+  const r = [], rnd = (a,b)=>a+Math.random()*(b-a);
+  const pick = () => { const u=Math.random();
+    if(u<.12) return Math.round(rnd(45,60)); if(u<.38) return Math.round(rnd(30,36));
+    if(u<.60) return Math.round(rnd(19,25)); if(u<.72) return Math.round(rnd(12,16));
+    if(u<.82) return Math.round(rnd(0,2)); return Math.round(rnd(3,70)); };
+  const names = ["しば","ねこ","ぽち","たま","みけ","こたろう","ゆず","もち","そら","ハル","レン","ナギ"];
+  const why = ["みんな50くらい選ぶと思うので、その2/3にした","真ん中の50の2/3の2/3","みんなが考えると0に行き着くけど、そこまで考えない人もいるので","なんとなく","理論上は0だけど人間はそこまで合理的じゃない","33を選ぶ人が多そうだから、その2/3"];
+  for (let i=0;i<46;i++) {
+    const h = pick();
+    r.push({session:"1", nickname: names[i%names.length]+(i>=names.length?i:""), order: Math.random()<.5?"human>random>ai":"human>ai>random",
+      guess_human:h, guess_random: Math.round(Math.max(0,Math.min(100, rnd(25,45)+(Math.random()<.2?rnd(-20,20):0)))),
+      guess_ai: Math.random()<.55?Math.round(rnd(0,2)):Math.round(rnd(3,30)),
+      pred_mean_human: Math.round(rnd(25,50)), reason_human: why[i%why.length]});
+  }
+  return r;
+}
+async function load(){
+  try {
+    ROWS = DEMO ? (ROWS.length ? ROWS : demoRows()) : await (await fetch(API_URL+"?t="+Date.now())).json();
+    document.getElementById("upd").textContent = (DEMO ? "デモデータ表示中・" : "") + "更新 " + new Date().toLocaleTimeString("ja-JP");
+  } catch(e) {
+    document.getElementById("upd").innerHTML = `<span class="err">読み込みエラー</span>`;
+  }
+  sessions(); render();
+}
+function rows(){
+  return ROWS.filter(r => String(r.session) === SESSION).map(r => ({
+    ...r, h: Number(r.guess_human), r: Number(r.guess_random), a: Number(r.guess_ai), p: Number(r.pred_mean_human)
+  })).filter(r => [r.h,r.r,r.a].every(x => Number.isFinite(x) && x>=0 && x<=100));
+}
+function sessions(){
+  const s = [...new Set(ROWS.map(r => String(r.session)).concat(SESSION))].sort((a,b)=>a-b);
+  const el = document.getElementById("sess");
+  el.innerHTML = s.map(x => `<option ${x===SESSION?"selected":""}>${esc(x)}</option>`).join("");
+  el.onchange = () => { SESSION = el.value; render(); };
+}
+
+// ---------- 描画 ----------
+function nav(){
+  document.getElementById("nav").innerHTML = VIEWS.map(([k,l]) => `<button class="${k===VIEW?'on':''}" data-v="${k}">${l}</button>`).join("");
+  document.querySelectorAll("nav button").forEach(b => b.onclick = () => { VIEW = b.dataset.v; render(); });
+}
+
+// 0..100 を 2 刻みの棒で。marks = [{x, color, label, dash}]
+function hist(vals, color, marks, h=230, bands=false){
+  if (marks && marks.length===2 && marks[1].x < marks[0].x && marks[1].x > 8) marks[1].left = true;
+  const W=1000, H=h, L=40, R=16, T=26, B=34, bw=2, nb=51;
+  const cnt = Array(nb).fill(0); vals.forEach(v => cnt[Math.min(nb-1, Math.floor(v/bw))]++);
+  const ymax = Math.max(3, ...cnt);
+  const X = v => L + (v/102)*(W-L-R), Y = c => T + (1-c/ymax)*(H-T-B);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
+  if (bands) LEVELS.forEach(Lv => { s += `<rect x="${X(Lv.v-3)}" y="${T}" width="${X(Lv.v+3)-X(Lv.v-3)}" height="${H-T-B}" fill="${C('grid')}"/>
+     <text x="${X(Lv.v)}" y="${T-8}" text-anchor="middle">L${Lv.k}</text>`; });
+  for (let y=0; y<=ymax; y+=Math.ceil(ymax/4)) s += `<line x1="${L}" x2="${W-R}" y1="${Y(y)}" y2="${Y(y)}" stroke="${C('grid')}"/><text x="${L-8}" y="${Y(y)+4}" text-anchor="end">${y}</text>`;
+  cnt.forEach((c,i) => { if(c) s += `<rect x="${X(i*bw)+1}" y="${Y(c)}" width="${X(bw)-X(0)-2}" height="${Y(0)-Y(c)}" rx="2" fill="${color}"/>`; });
+  [0,10,20,30,40,50,60,70,80,90,100].forEach(t => s += `<text x="${X(t+1)}" y="${H-12}" text-anchor="middle">${t}</text>`);
+  (marks||[]).forEach(m => { if (!isFinite(m.x)) return;
+    s += `<line x1="${X(m.x+1)}" x2="${X(m.x+1)}" y1="${T}" y2="${H-B}" stroke="${m.color}" stroke-width="3" ${m.dash?'stroke-dasharray="6 5"':''}/>
+          <text x="${X(m.x+1)+(m.left?-6:6)}" y="${T+14+(m.dy||0)}" text-anchor="${m.left?'end':'start'}" style="fill:${m.color};font-weight:700;font-size:14px;paint-order:stroke;stroke:${C('card')};stroke-width:4px;stroke-linejoin:round">${esc(m.label)}</text>`; });
+  return s + `</svg>`;
+}
+
+function vWait(d){
+  return `<div class="card hero">
+    <div class="sub">回答済み</div>
+    <div class="n">${d.length}</div>
+    <div class="sub">人</div>
+    <p style="margin-top:24px">相手が「受講生」「でたらめなプログラム」「合理的なAI」の3つの場面で、<br>平均 × 2/3 にいちばん近い数字を選んでください。</p>
+    <button class="reveal" onclick="VIEW='human';render()">結果発表 ▶</button>
+  </div>`;
+}
+
+function vHuman(d){
+  if (!d.length) return `<div class="card">まだ回答がありません</div>`;
+  const hs = d.map(r=>r.h), m = mean(hs), t = m*2/3;
+  const best = Math.min(...d.map(r => Math.abs(r.h - t)));
+  const win = d.filter(r => Math.abs(r.h - t) === best);
+  const pm = mean(d.map(r=>r.p).filter(Number.isFinite));
+  return `<div class="card">
+    <div class="tiles">
+      <div class="tile"><div class="k">回答者</div><div class="v">${d.length}人</div></div>
+      <div class="tile"><div class="k">全員の平均</div><div class="v">${f1(m)}</div></div>
+      <div class="tile"><div class="k">平均 × 2/3（正解）</div><div class="v" style="color:var(--accent)">${f1(t)}</div></div>
+      <div class="tile"><div class="k">みんなが予想した平均</div><div class="v">${f1(pm)}</div></div>
+    </div>
+    <div class="winner">
+      <div class="crown">👑</div>
+      <div class="sub">いちばん近かったのは（${win[0].h}）</div>
+      <div class="names">${win.map(r=>esc(r.nickname)).join("、")}</div>
+      <div class="prize">🍪 お菓子プレゼント！</div>
+    </div>
+    <div class="rowlabel" style="color:var(--human)">🧑‍🎓 受講生相手に選んだ数字の分布</div>
+    ${hist(hs, C('human'), [{x:m,color:C('ink'),label:`平均 ${f1(m)}`,dash:true},{x:t,color:C('gold'),label:`正解 ${f1(t)}`,dy:20}], 260, true)}
+    <p class="sub">灰色の帯：L0 = 50（何も考えない平均）、L1 = 33（みんな50と読む）、L2 = 22（みんなL1と読む）、L3 = 15 …… 考え続けると 0（ナッシュ均衡）にたどり着く。</p>
+  </div>`;
+}
+
+function vCompare(d){
+  if (!d.length) return `<div class="card">まだ回答がありません</div>`;
+  const rows3 = [
+    {k:"human", ico:"🧑‍🎓", name:"受講生が相手", vals:d.map(r=>r.h), col:C('human'), ref:null},
+    {k:"random", ico:"🎲", name:"でたらめなプログラムが相手", vals:d.map(r=>r.r), col:C('random'), ref:{x:33.2,label:"最適 ≈33"}},
+    {k:"ai", ico:"🤖", name:"合理的なAIが相手", vals:d.map(r=>r.a), col:C('ai'), ref:{x:0,label:"最適 0"}},
+  ];
+  const tm = mean(d.map(r=>r.h))*2/3; rows3[0].ref = {x:tm, label:`正解 ${f1(tm)}`};
+  const zeroA = d.filter(r=>r.a<=1).length, zeroH = d.filter(r=>r.h<=1).length;
+  return `<div class="card">
+    <div class="tiles">
+      ${rows3.map(r=>`<div class="tile"><div class="k">${r.ico} ${r.name}：平均（中央値）</div><div class="v" style="color:${r.col}">${f1(mean(r.vals))} <span style="font-size:1rem">(${f1(median(r.vals))})</span></div></div>`).join("")}
+      <div class="tile"><div class="k">0か1を選んだ人：受講生相手 → AI相手</div><div class="v">${zeroH} → ${zeroA}人</div></div>
+    </div>
+    ${rows3.map(r => `<div class="rowlabel" style="color:${r.col}">${r.ico} ${r.name}</div>
+      ${hist(r.vals, r.col, [{x:mean(r.vals),color:C('ink'),label:`平均 ${f1(mean(r.vals))}`,dash:true},{x:r.ref.x,color:C('gold'),label:r.ref.label,dy:20}], 190)}`).join("")}
+    <p class="sub">同じ人が、同じルールで、相手の説明だけを変えて選んだ数字です。でたらめな相手なら平均は50なので最適はおよそ33、合理的なAIが相手なら全員が考え抜くので0が答えになります。</p>
+  </div>`;
+}
+
+function vReasons(d){
+  if (!d.length) return `<div class="card">まだ回答がありません</div>`;
+  const s = [...d].sort((a,b)=>b.h-a.h);
+  return `<div class="card">
+    <p class="sub">受講生相手のときに選んだ数字と、その理由（大きい順・名前は出ません）</p>
+    <div class="reasons">${s.map(r => `<div class="reason"><span class="num">${r.h}</span><span class="lv">${esc(levelOf(r.h))}</span>${esc(r.reason_human)}</div>`).join("")}</div>
+  </div>`;
+}
+
+function render(){
+  nav();
+  const d = rows();
+  document.getElementById("main").innerHTML =
+    VIEW==="wait" ? vWait(d) : VIEW==="human" ? vHuman(d) : VIEW==="compare" ? vCompare(d) : vReasons(d);
+}
+
+load();
+if (!DEMO) setInterval(load, 5000);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
+</script>
+</body>
+</html>
